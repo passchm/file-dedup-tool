@@ -19,6 +19,7 @@ import datetime
 import hashlib
 import sqlite3
 import sys
+import tarfile
 import zipfile
 from dataclasses import dataclass
 from enum import Enum
@@ -41,6 +42,9 @@ class EntryKind(Enum):
     SYMLINK = 3
     ZIP_MEMBER_FILE = 101
     ZIP_MEMBER_DIRECTORY = 102
+    TAR_MEMBER_FILE = 201
+    TAR_MEMBER_DIRECTORY = 202
+    TAR_MEMBER_SYMLINK = 203
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,50 @@ class UnknownEntryKindError(NotImplementedError):
 def checksum_file(file_path: Path) -> str:
     with open(file_path, "rb") as f:
         return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def scan_tar_file(tar_path: Path) -> list[Entry]:
+    items = []
+    assert tarfile.is_tarfile(tar_path)
+    with tarfile.open(tar_path) as tf:
+        for info in tf:
+            timestamp = datetime.datetime.fromtimestamp(
+                info.mtime,
+                tz=datetime.timezone.utc,
+            )
+            if info.issym():
+                items.append(
+                    Entry(
+                        EntryKind.TAR_MEMBER_SYMLINK,
+                        tar_path / info.name,
+                        info.size,
+                        timestamp,
+                        None,
+                    )
+                )
+            elif info.isdir():
+                items.append(
+                    Entry(
+                        EntryKind.TAR_MEMBER_DIRECTORY,
+                        tar_path / info.name,
+                        info.size,
+                        timestamp,
+                        None,
+                    )
+                )
+            elif info.isfile():
+                f = tf.extractfile(info)
+                file_checksum = hashlib.file_digest(f, "sha256").hexdigest()
+                items.append(
+                    Entry(
+                        EntryKind.TAR_MEMBER_FILE,
+                        tar_path / info.name,
+                        info.size,
+                        timestamp,
+                        file_checksum,
+                    )
+                )
+    return list(sorted(items, key=lambda item: item.path))
 
 
 def scan_zip_file(zip_path: Path) -> list[Entry]:
@@ -145,6 +193,10 @@ def scan_path(path: Path) -> list[Entry]:
         if path.suffix.lower() == ".zip":
             assert zipfile.is_zipfile(path)
             items.extend(scan_zip_file(path))
+
+        if ".tar" in map(lambda s: s.lower(), path.suffixes):
+            assert tarfile.is_tarfile(path)
+            items.extend(scan_tar_file(path))
     else:
         raise UnknownEntryKindError("unknown kind of path " + repr(path))
     return items
