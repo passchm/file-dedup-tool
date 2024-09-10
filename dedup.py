@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-SQL_INIT = """
+SQL_INIT = """\
 CREATE TABLE IF NOT EXISTS files (
     kind INTEGER,
     path TEXT,
@@ -226,7 +226,7 @@ def main():
         entries,
     )
     conn.executemany(
-        "INSERT INTO files (kind, path, size, timestamp, checksum)"
+        "INSERT INTO files (kind, path, size, timestamp, checksum) "
         + "VALUES (?, ?, ?, ?, ?)",
         mapped_entries,
     )
