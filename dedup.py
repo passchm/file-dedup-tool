@@ -19,6 +19,7 @@ import datetime
 import hashlib
 import sqlite3
 import sys
+import zipfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -38,6 +39,8 @@ class EntryKind(Enum):
     FILE = 1
     DIRECTORY = 2
     SYMLINK = 3
+    ZIP_MEMBER_FILE = 101
+    ZIP_MEMBER_DIRECTORY = 102
 
 
 @dataclass(frozen=True)
@@ -56,6 +59,41 @@ class UnknownEntryKindError(NotImplementedError):
 def checksum_file(file_path: Path) -> str:
     with open(file_path, "rb") as f:
         return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def scan_zip_file(zip_path: Path) -> list[Entry]:
+    items = []
+    assert zipfile.is_zipfile(zip_path)
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            timestamp = datetime.datetime(
+                *info.date_time,
+                tzinfo=datetime.timezone.utc,
+            )
+            if info.is_dir():
+                assert info.file_size == 0
+                items.append(
+                    Entry(
+                        EntryKind.ZIP_MEMBER_DIRECTORY,
+                        zip_path / info.filename,
+                        info.file_size,
+                        timestamp,
+                        None,
+                    )
+                )
+            else:
+                with zf.open(info.filename, "r") as f:
+                    file_checksum = hashlib.file_digest(f, "sha256").hexdigest()
+                items.append(
+                    Entry(
+                        EntryKind.ZIP_MEMBER_FILE,
+                        zip_path / info.filename,
+                        info.file_size,
+                        timestamp,
+                        file_checksum,
+                    )
+                )
+    return list(sorted(items, key=lambda item: item.path))
 
 
 def scan_path(path: Path) -> list[Entry]:
@@ -103,6 +141,10 @@ def scan_path(path: Path) -> list[Entry]:
                 checksum_file(path),
             )
         )
+
+        if path.suffix.lower() == ".zip":
+            assert zipfile.is_zipfile(path)
+            items.extend(scan_zip_file(path))
     else:
         raise UnknownEntryKindError("unknown kind of path " + repr(path))
     return items
