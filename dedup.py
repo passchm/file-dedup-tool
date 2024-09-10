@@ -58,66 +58,67 @@ def checksum_file(file_path: Path) -> str:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-def scan_dir(dir_path: Path):
+def scan_path(path: Path) -> list[Entry]:
     items = []
-    for path in sorted(dir_path.iterdir()):
-        if path.is_symlink():
-            items.append(
-                Entry(
-                    EntryKind.SYMLINK,
-                    path,
-                    path.lstat().st_size,
-                    datetime.datetime.fromtimestamp(
-                        path.lstat().st_mtime,
-                        tz=datetime.timezone.utc,
-                    ),
-                    None,
-                )
+    if path.is_symlink():
+        items.append(
+            Entry(
+                EntryKind.SYMLINK,
+                path,
+                path.lstat().st_size,
+                datetime.datetime.fromtimestamp(
+                    path.lstat().st_mtime,
+                    tz=datetime.timezone.utc,
+                ),
+                None,
             )
-        elif path.is_dir():
-            assert not path.is_symlink()
-            items.append(
-                Entry(
-                    EntryKind.DIRECTORY,
-                    path,
-                    path.lstat().st_size,
-                    datetime.datetime.fromtimestamp(
-                        path.lstat().st_mtime,
-                        tz=datetime.timezone.utc,
-                    ),
-                    None,
-                )
+        )
+    elif path.is_dir():
+        assert not path.is_symlink()
+        items.append(
+            Entry(
+                EntryKind.DIRECTORY,
+                path,
+                path.lstat().st_size,
+                datetime.datetime.fromtimestamp(
+                    path.lstat().st_mtime,
+                    tz=datetime.timezone.utc,
+                ),
+                None,
             )
-            items.extend(scan_dir(path))
-        elif path.is_file():
-            assert not path.is_symlink()
-            items.append(
-                Entry(
-                    EntryKind.FILE,
-                    path,
-                    path.lstat().st_size,
-                    datetime.datetime.fromtimestamp(
-                        path.lstat().st_mtime,
-                        tz=datetime.timezone.utc,
-                    ),
-                    checksum_file(path),
-                )
+        )
+        for p in sorted(path.iterdir()):
+            items.extend(scan_path(p))
+    elif path.is_file():
+        assert not path.is_symlink()
+        items.append(
+            Entry(
+                EntryKind.FILE,
+                path,
+                path.lstat().st_size,
+                datetime.datetime.fromtimestamp(
+                    path.lstat().st_mtime,
+                    tz=datetime.timezone.utc,
+                ),
+                checksum_file(path),
             )
-        else:
-            raise UnknownEntryKindError("unknown kind of path " + repr(path))
+        )
+    else:
+        raise UnknownEntryKindError("unknown kind of path " + repr(path))
     return items
 
 
 def main():
-    target_dir = Path(sys.argv[1])
-    print(target_dir)
+    target_path = Path(sys.argv[1])
+    print(target_path)
+    assert target_path.exists()
 
     conn = sqlite3.connect("dedup.sqlite3")
 
     conn.execute(SQL_INIT)
     conn.commit()
 
-    entries = scan_dir(target_dir)
+    entries = scan_path(target_path)
     print(len(entries))
 
     mapped_entries = map(
