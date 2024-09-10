@@ -15,6 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import argparse
 import datetime
 import hashlib
 import sqlite3
@@ -203,34 +204,48 @@ def scan_path(path: Path) -> list[Entry]:
 
 
 def main():
-    target_path = Path(sys.argv[1])
-    print(target_path)
-    assert target_path.exists()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--database", default="./dedup.sqlite3", help="the database file"
+    )
+    parser.add_argument(
+        "target_paths",
+        metavar="target-path",
+        nargs="+",
+        help="the target paths which should be scanned",
+    )
 
-    conn = sqlite3.connect("dedup.sqlite3")
+    args = parser.parse_args()
+
+    conn = sqlite3.connect(args.database)
 
     conn.execute(SQL_INIT)
     conn.commit()
 
-    entries = scan_path(target_path)
-    print(len(entries))
+    for target_path_str in args.target_paths:
+        target_path = Path(target_path_str)
+        assert target_path.exists()
+        print(target_path)
 
-    mapped_entries = map(
-        lambda e: (
-            e.kind.value,
-            str(e.path),
-            e.size,
-            e.timestamp.timestamp(),
-            e.checksum,
-        ),
-        entries,
-    )
-    conn.executemany(
-        "INSERT INTO files (kind, path, size, timestamp, checksum) "
-        + "VALUES (?, ?, ?, ?, ?)",
-        mapped_entries,
-    )
-    conn.commit()
+        entries = scan_path(target_path)
+        print(len(entries))
+
+        mapped_entries = map(
+            lambda e: (
+                e.kind.value,
+                str(e.path),
+                e.size,
+                e.timestamp.timestamp(),
+                e.checksum,
+            ),
+            entries,
+        )
+        conn.executemany(
+            "INSERT INTO files (kind, path, size, timestamp, checksum) "
+            + "VALUES (?, ?, ?, ?, ?)",
+            mapped_entries,
+        )
+        conn.commit()
 
     conn.close()
 
