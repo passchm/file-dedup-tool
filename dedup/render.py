@@ -47,11 +47,43 @@ def build_tree(paths):
     return root
 
 
-def print_tree(d, level=0):
-    for key, value in d.items():
+def print_tree(tree, level=0):
+    for key, value in tree.items():
         print("    " * level + str(key))
         if isinstance(value, dict):
             print_tree(value, level=level + 1)
+
+
+def dump_tree(tree, paths_to_entries: dict[Path, Entry], current_path: Path, level=0):
+    for key, value in tree.items():
+        line_text = str(key)
+        if (current_path / key) in paths_to_entries:
+            entry = paths_to_entries[current_path / key]
+            line_text += " " + str(entry.kind)
+        print("    " * level + line_text)
+        if isinstance(value, dict):
+            dump_tree(value, paths_to_entries, current_path / key, level=level + 1)
+
+
+def render_tree(tree, paths_to_entries: dict[Path, Entry], current_path: Path):
+    list_items = []
+    for key, value in tree.items():
+        current_item_content = []
+
+        if (current_path / key) in paths_to_entries:
+            entry = paths_to_entries[current_path / key]
+            current_item_content.append(XHT("u", {}, str(entry.kind)))
+            current_item_content.append(" " + str(key))
+        else:
+            current_item_content.append(str(key))
+
+        if isinstance(value, dict):
+            current_item_content.append(
+                render_tree(value, paths_to_entries, current_path / key)
+            )
+
+        list_items.append(XHT("li", {}, *current_item_content))
+    return XHT("ul", {}, *list_items)
 
 
 def main():
@@ -71,14 +103,21 @@ def main():
             )
         )
     )
+    bare_tree = build_tree(raw_paths)
+    # print_tree(bare_tree)
 
+    paths_to_entries = dict()
     for row in conn.execute("SELECT * FROM files ORDER BY path"):
         entry = convert_row_to_entry(row)
+        paths_to_entries[entry.path] = entry
 
     conn.close()
 
-    bare_tree = build_tree(raw_paths)
-    print_tree(bare_tree)
+    # dump_tree(bare_tree, paths_to_entries, Path())
+
+    html_tree = XHT.page([], [render_tree(bare_tree, paths_to_entries, Path())])
+    html_text = html_tree.xhtml5()
+    Path("./index.xhtml").write_text(html_text)
 
 
 if __name__ == "__main__":
