@@ -21,6 +21,7 @@ import hashlib
 import sqlite3
 import sys
 import tarfile
+import typing
 import zipfile
 from dataclasses import dataclass
 from enum import Enum
@@ -35,6 +36,16 @@ CREATE TABLE IF NOT EXISTS files (
     checksum TEXT
 );
 """
+
+# Issues with nested archives:
+# - If a ZIP file is inside of a TAR file, the files inside of the ZIP file will
+#   have EntryKind.ZIP_MEMBER_FILE.
+# - If a TAR file is inside of a ZIP file, the files inside of the TAR file will
+#   have EntryKind.TAR_MEMBER_FILE.
+# - The root directory inside of the archive has the same path
+#   as the archive file itself.
+# Therefore, this functionality is currently disabled.
+SCAN_NESTED_ARCHIVES = False
 
 
 class EntryKind(Enum):
@@ -66,10 +77,10 @@ def checksum_file(file_path: Path) -> str:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-def scan_tar_file(tar_path: Path) -> list[Entry]:
+def scan_tar_fileobj(tar_path: Path, tar_fileobj: typing.BinaryIO) -> list[Entry]:
     items = []
-    assert tarfile.is_tarfile(tar_path)
-    with tarfile.open(tar_path) as tf:
+    assert tarfile.is_tarfile(tar_fileobj)
+    with tarfile.open(fileobj=tar_fileobj, mode="r") as tf:
         for info in tf:
             timestamp = datetime.datetime.fromtimestamp(
                 info.mtime,
@@ -107,13 +118,29 @@ def scan_tar_file(tar_path: Path) -> list[Entry]:
                         file_checksum,
                     )
                 )
+
+                if SCAN_NESTED_ARCHIVES:
+                    if Path(info.name).suffix.lower() == ".zip":
+                        print("ZIP in TAR:", tar_path / info.name)
+                        f = tf.extractfile(info)
+                        items.extend(scan_zip_fileobj(tar_path / info.name, f))
+
+                    if ".tar" in map(lambda s: s.lower(), Path(info.name).suffixes):
+                        print("TAR in TAR:", tar_path / info.name)
+                        f = tf.extractfile(info)
+                        items.extend(scan_tar_fileobj(tar_path / info.name, f))
     return list(sorted(items, key=lambda item: item.path))
 
 
-def scan_zip_file(zip_path: Path) -> list[Entry]:
+def scan_tar_file(tar_path: Path) -> list[Entry]:
+    with open(tar_path, "rb") as tar_fileobj:
+        return scan_tar_fileobj(tar_path, tar_fileobj)
+
+
+def scan_zip_fileobj(zip_path: Path, zip_fileobj: typing.BinaryIO) -> list[Entry]:
     items = []
-    assert zipfile.is_zipfile(zip_path)
-    with zipfile.ZipFile(zip_path) as zf:
+    assert zipfile.is_zipfile(zip_fileobj)
+    with zipfile.ZipFile(zip_fileobj) as zf:
         for info in zf.infolist():
             timestamp = datetime.datetime(
                 *info.date_time,
@@ -142,7 +169,23 @@ def scan_zip_file(zip_path: Path) -> list[Entry]:
                         file_checksum,
                     )
                 )
+
+                if SCAN_NESTED_ARCHIVES:
+                    if Path(info.filename).suffix.lower() == ".zip":
+                        print("ZIP in ZIP:", zip_path / info.filename)
+                        with zf.open(info.filename, "r") as f:
+                            items.extend(scan_zip_fileobj(zip_path / info.filename, f))
+
+                    if ".tar" in map(lambda s: s.lower(), Path(info.filename).suffixes):
+                        print("TAR in ZIP:", zip_path / info.filename)
+                        with zf.open(info.filename, "r") as f:
+                            items.extend(scan_tar_fileobj(zip_path / info.filename, f))
     return list(sorted(items, key=lambda item: item.path))
+
+
+def scan_zip_file(zip_path: Path) -> list[Entry]:
+    with open(zip_path, "rb") as zip_fileobj:
+        return scan_zip_fileobj(zip_path, zip_fileobj)
 
 
 def scan_path(path: Path) -> list[Entry]:
@@ -240,12 +283,12 @@ def main():
             ),
             entries,
         )
-        conn.executemany(
-            "INSERT INTO files (kind, path, size, timestamp, checksum) "
-            + "VALUES (?, ?, ?, ?, ?)",
-            mapped_entries,
-        )
-        conn.commit()
+        with conn:
+            conn.executemany(
+                "INSERT INTO files (kind, path, size, timestamp, checksum) "
+                + "VALUES (?, ?, ?, ?, ?)",
+                mapped_entries,
+            )
 
     conn.close()
 
