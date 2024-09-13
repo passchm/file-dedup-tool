@@ -24,24 +24,26 @@ from pathlib import Path
 
 @dataclass
 class ZipTree:
-    info: zipfile.ZipInfo
+    info: zipfile.ZipInfo | None
     path: Path
     children: list["ZipTree"]
 
 
-def build_paths_tree(paths: list[Path]):
-    tree = lambda: defaultdict(tree)
-    root = tree()
+PathsTree = dict[str, "PathsTree"]
 
+
+def build_paths_tree(paths: list[Path]) -> PathsTree:
+    root: PathsTree = {}
     for path in paths:
         current_level = root
         for part in path.parts:
+            if part not in current_level:
+                current_level[part] = {}
             current_level = current_level[part]
-
     return root
 
 
-def build_bare_tree(parent_node: ZipTree, tree: dict) -> None:
+def build_bare_tree(parent_node: ZipTree, tree: PathsTree) -> None:
     for key, value in tree.items():
         child_node = ZipTree(None, parent_node.path / key, [])
         if isinstance(value, dict):
@@ -86,7 +88,7 @@ def build_zip_tree(infos: list[zipfile.ZipInfo]) -> ZipTree:
     return root_node
 
 
-def print_zip_tree(tree: ZipTree, level=0):
+def print_zip_tree(tree: ZipTree, level: int = 0) -> None:
     if tree.info:
         print("    " * level + "! " + str(tree.path) + " " + tree.info.filename)
     else:
@@ -95,7 +97,7 @@ def print_zip_tree(tree: ZipTree, level=0):
         print_zip_tree(child, level=level + 1)
 
 
-def main():
+def main() -> None:
     zip_memory = BytesIO()
 
     with zipfile.ZipFile(zip_memory, "w") as zf:

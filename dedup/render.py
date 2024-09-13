@@ -25,7 +25,7 @@ from .scan import Entry, EntryKind
 from .xhtml5builder import XHT
 
 
-def convert_row_to_entry(row: tuple) -> Entry:
+def convert_row_to_entry(row: tuple[int, str, int, float, str | None]) -> Entry:
     return Entry(
         EntryKind(row[0]),
         Path(row[1]),
@@ -36,24 +36,26 @@ def convert_row_to_entry(row: tuple) -> Entry:
     )
 
 
-def build_tree(paths):
-    tree = lambda: defaultdict(tree)
-    root = tree()
+PathsTree = dict[str, "PathsTree"]
 
+
+def build_paths_tree(paths: frozenset[Path]) -> PathsTree:
+    root: PathsTree = {}
     for path in paths:
         current_level = root
         for part in path.parts:
+            if part not in current_level:
+                current_level[part] = {}
             current_level = current_level[part]
-
     return root
 
 
 def render_tree(
-    tree,
+    tree: PathsTree,
     paths_to_entries: dict[Path, Entry],
     checksums_to_entries: dict[str, list[Entry]],
     parent_path: Path,
-):
+) -> XHT:
     list_items = []
     for key, value in tree.items():
         current_path = parent_path / key
@@ -128,7 +130,7 @@ def main() -> None:
             )
         )
     )
-    bare_tree = build_tree(raw_paths)
+    bare_tree = build_paths_tree(raw_paths)
 
     paths_to_entries = dict()
     checksums_to_entries = dict()

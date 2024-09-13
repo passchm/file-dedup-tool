@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS files (
     kind INTEGER,
     path TEXT,
     size INTEGER,
-    timestamp INTEGER,
+    timestamp REAL,
     checksum TEXT
 );
 """
