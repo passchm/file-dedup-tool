@@ -32,6 +32,7 @@ def convert_row_to_entry(row: tuple) -> Entry:
         row[2],
         datetime.datetime.fromtimestamp(row[3], tz=datetime.timezone.utc),
         row[4],
+        [],
     )
 
 
@@ -50,7 +51,7 @@ def build_tree(paths):
 def render_tree(
     tree,
     paths_to_entries: dict[Path, Entry],
-    checksums_to_entries: dict[str, Entry],
+    checksums_to_entries: dict[str, list[Entry]],
     parent_path: Path,
 ):
     list_items = []
@@ -110,7 +111,7 @@ def render_tree(
     return XHT("ul", {}, *list_items)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--database", default="./dedup.sqlite3", help="the database file"
@@ -134,10 +135,11 @@ def main():
     for row in conn.execute("SELECT * FROM files ORDER BY path"):
         entry = convert_row_to_entry(row)
         paths_to_entries[entry.path] = entry
-        if entry.checksum not in checksums_to_entries:
-            checksums_to_entries[entry.checksum] = [entry]
-        else:
-            checksums_to_entries[entry.checksum].append(entry)
+        if entry.checksum:
+            if entry.checksum not in checksums_to_entries:
+                checksums_to_entries[entry.checksum] = [entry]
+            else:
+                checksums_to_entries[entry.checksum].append(entry)
 
     conn.close()
 

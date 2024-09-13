@@ -46,7 +46,8 @@ class Entry:
     path: Path
     size: int
     timestamp: datetime.datetime
-    checksum: str
+    checksum: str | None
+    children: list["Entry"]
 
 
 class UnknownEntryKindError(NotImplementedError):
@@ -58,65 +59,58 @@ def checksum_file(file_path: Path) -> str:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-def scan_path(path: Path) -> list[Entry]:
-    items = []
+def scan_path(path: Path) -> Entry:
     if path.is_symlink():
-        items.append(
-            Entry(
-                EntryKind.SYMLINK,
-                path,
-                path.lstat().st_size,
-                datetime.datetime.fromtimestamp(
-                    path.lstat().st_mtime,
-                    tz=datetime.timezone.utc,
-                ),
-                None,
-            )
+        return Entry(
+            EntryKind.SYMLINK,
+            path,
+            path.lstat().st_size,
+            datetime.datetime.fromtimestamp(
+                path.lstat().st_mtime,
+                tz=datetime.timezone.utc,
+            ),
+            None,
+            [],
         )
     elif path.is_dir():
         assert not path.is_symlink()
-        items.append(
-            Entry(
-                EntryKind.DIRECTORY,
-                path,
-                path.lstat().st_size,
-                datetime.datetime.fromtimestamp(
-                    path.lstat().st_mtime,
-                    tz=datetime.timezone.utc,
-                ),
-                None,
-            )
+        return Entry(
+            EntryKind.DIRECTORY,
+            path,
+            path.lstat().st_size,
+            datetime.datetime.fromtimestamp(
+                path.lstat().st_mtime,
+                tz=datetime.timezone.utc,
+            ),
+            None,
+            list(map(scan_path, sorted(path.iterdir()))),
         )
-        for p in sorted(path.iterdir()):
-            items.extend(scan_path(p))
     elif path.is_file():
         assert not path.is_symlink()
-        items.append(
-            Entry(
-                EntryKind.FILE,
-                path,
-                path.lstat().st_size,
-                datetime.datetime.fromtimestamp(
-                    path.lstat().st_mtime,
-                    tz=datetime.timezone.utc,
-                ),
-                checksum_file(path),
-            )
+        return Entry(
+            EntryKind.FILE,
+            path,
+            path.lstat().st_size,
+            datetime.datetime.fromtimestamp(
+                path.lstat().st_mtime,
+                tz=datetime.timezone.utc,
+            ),
+            checksum_file(path),
+            [],
         )
-
-        if path.suffix.lower() == ".zip":
-            # TODO: Scan the ZIP file
-            pass
-
-        if ".tar" in map(lambda s: s.lower(), path.suffixes):
-            # TODO: Scan the TAR file
-            pass
     else:
         raise UnknownEntryKindError("unknown kind of path " + repr(path))
-    return items
 
 
-def main():
+def flatten_entries(entry: Entry) -> list[Entry]:
+    entries = []
+    entries.append(entry)
+    for child in entry.children:
+        entries.extend(flatten_entries(child))
+    return entries
+
+
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--database", default="./dedup.sqlite3", help="the database file"
@@ -140,8 +134,8 @@ def main():
         assert target_path.exists()
         print(target_path)
 
-        entries = scan_path(target_path)
-        print(len(entries))
+        root_entry = scan_path(target_path)
+        entries = flatten_entries(root_entry)
 
         mapped_entries = map(
             lambda e: (
