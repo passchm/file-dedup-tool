@@ -28,7 +28,7 @@ class XHT:
         self.attributes = attributes
         self.content = content
 
-    def element(self):
+    def element(self) -> ET.Element:
         if len(self.attributes) > 0:
             e = ET.Element(self.tag, self.attributes)
         else:
@@ -37,17 +37,18 @@ class XHT:
         if len(self.content) > 0:
             current_element = None
             for i in range(len(self.content)):
-                if isinstance(self.content[i], XHT):
-                    current_element = self.content[i].element()
+                content_part = self.content[i]
+                if isinstance(content_part, XHT):
+                    current_element = content_part.element()
                     e.append(current_element)
                 else:
-                    assert isinstance(self.content[i], str)
+                    assert isinstance(content_part, str)
                     if current_element is None:
                         assert e.text is None
-                        e.text = self.content[i]
+                        e.text = content_part
                     else:
                         assert current_element.tail is None
-                        current_element.tail = self.content[i]
+                        current_element.tail = content_part
 
         return e
 
@@ -62,7 +63,11 @@ class XHT:
             return bio.getvalue().decode("utf-8")
 
     @classmethod
-    def page(cls, head, body):
+    def page(
+        cls,
+        head: list[Union[str, "XHT"]],
+        body: list[Union[str, "XHT"]],
+    ) -> "XHT":
         return cls(
             "html",
             {
@@ -87,7 +92,7 @@ class XHT:
         )
 
 
-def main():
+def main() -> None:
     print(XHT.page([XHT("title", {}, "Hello")], [XHT("p", {}, "World")]).xhtml5())
     print(XHT("p", {}, "Hello ", XHT("b", {}, "World<br />")).xhtml5())
 
