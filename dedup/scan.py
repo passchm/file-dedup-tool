@@ -19,10 +19,6 @@ import argparse
 import datetime
 import hashlib
 import sqlite3
-import sys
-import tarfile
-import typing
-import zipfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -37,26 +33,11 @@ CREATE TABLE IF NOT EXISTS files (
 );
 """
 
-# Issues with nested archives:
-# - If a ZIP file is inside of a TAR file, the files inside of the ZIP file will
-#   have EntryKind.ZIP_MEMBER_FILE.
-# - If a TAR file is inside of a ZIP file, the files inside of the TAR file will
-#   have EntryKind.TAR_MEMBER_FILE.
-# - The root directory inside of the archive has the same path
-#   as the archive file itself.
-# Therefore, this functionality is currently disabled.
-SCAN_NESTED_ARCHIVES = False
-
 
 class EntryKind(Enum):
     FILE = 1
     DIRECTORY = 2
     SYMLINK = 3
-    ZIP_MEMBER_FILE = 101
-    ZIP_MEMBER_DIRECTORY = 102
-    TAR_MEMBER_FILE = 201
-    TAR_MEMBER_DIRECTORY = 202
-    TAR_MEMBER_SYMLINK = 203
 
 
 @dataclass(frozen=True)
@@ -75,117 +56,6 @@ class UnknownEntryKindError(NotImplementedError):
 def checksum_file(file_path: Path) -> str:
     with open(file_path, "rb") as f:
         return hashlib.file_digest(f, "sha256").hexdigest()
-
-
-def scan_tar_fileobj(tar_path: Path, tar_fileobj: typing.BinaryIO) -> list[Entry]:
-    items = []
-    assert tarfile.is_tarfile(tar_fileobj)
-    with tarfile.open(fileobj=tar_fileobj, mode="r") as tf:
-        for info in tf:
-            timestamp = datetime.datetime.fromtimestamp(
-                info.mtime,
-                tz=datetime.timezone.utc,
-            )
-            if info.issym():
-                items.append(
-                    Entry(
-                        EntryKind.TAR_MEMBER_SYMLINK,
-                        tar_path / info.name,
-                        info.size,
-                        timestamp,
-                        None,
-                    )
-                )
-            elif info.isdir():
-                items.append(
-                    Entry(
-                        EntryKind.TAR_MEMBER_DIRECTORY,
-                        tar_path / info.name,
-                        info.size,
-                        timestamp,
-                        None,
-                    )
-                )
-            elif info.isfile():
-                f = tf.extractfile(info)
-                file_checksum = hashlib.file_digest(f, "sha256").hexdigest()
-                items.append(
-                    Entry(
-                        EntryKind.TAR_MEMBER_FILE,
-                        tar_path / info.name,
-                        info.size,
-                        timestamp,
-                        file_checksum,
-                    )
-                )
-
-                if SCAN_NESTED_ARCHIVES:
-                    if Path(info.name).suffix.lower() == ".zip":
-                        print("ZIP in TAR:", tar_path / info.name)
-                        f = tf.extractfile(info)
-                        items.extend(scan_zip_fileobj(tar_path / info.name, f))
-
-                    if ".tar" in map(lambda s: s.lower(), Path(info.name).suffixes):
-                        print("TAR in TAR:", tar_path / info.name)
-                        f = tf.extractfile(info)
-                        items.extend(scan_tar_fileobj(tar_path / info.name, f))
-    return list(sorted(items, key=lambda item: item.path))
-
-
-def scan_tar_file(tar_path: Path) -> list[Entry]:
-    with open(tar_path, "rb") as tar_fileobj:
-        return scan_tar_fileobj(tar_path, tar_fileobj)
-
-
-def scan_zip_fileobj(zip_path: Path, zip_fileobj: typing.BinaryIO) -> list[Entry]:
-    items = []
-    assert zipfile.is_zipfile(zip_fileobj)
-    with zipfile.ZipFile(zip_fileobj) as zf:
-        for info in zf.infolist():
-            timestamp = datetime.datetime(
-                *info.date_time,
-                tzinfo=datetime.timezone.utc,
-            )
-            if info.is_dir():
-                assert info.file_size == 0
-                items.append(
-                    Entry(
-                        EntryKind.ZIP_MEMBER_DIRECTORY,
-                        zip_path / info.filename,
-                        info.file_size,
-                        timestamp,
-                        None,
-                    )
-                )
-            else:
-                with zf.open(info.filename, "r") as f:
-                    file_checksum = hashlib.file_digest(f, "sha256").hexdigest()
-                items.append(
-                    Entry(
-                        EntryKind.ZIP_MEMBER_FILE,
-                        zip_path / info.filename,
-                        info.file_size,
-                        timestamp,
-                        file_checksum,
-                    )
-                )
-
-                if SCAN_NESTED_ARCHIVES:
-                    if Path(info.filename).suffix.lower() == ".zip":
-                        print("ZIP in ZIP:", zip_path / info.filename)
-                        with zf.open(info.filename, "r") as f:
-                            items.extend(scan_zip_fileobj(zip_path / info.filename, f))
-
-                    if ".tar" in map(lambda s: s.lower(), Path(info.filename).suffixes):
-                        print("TAR in ZIP:", zip_path / info.filename)
-                        with zf.open(info.filename, "r") as f:
-                            items.extend(scan_tar_fileobj(zip_path / info.filename, f))
-    return list(sorted(items, key=lambda item: item.path))
-
-
-def scan_zip_file(zip_path: Path) -> list[Entry]:
-    with open(zip_path, "rb") as zip_fileobj:
-        return scan_zip_fileobj(zip_path, zip_fileobj)
 
 
 def scan_path(path: Path) -> list[Entry]:
@@ -235,12 +105,12 @@ def scan_path(path: Path) -> list[Entry]:
         )
 
         if path.suffix.lower() == ".zip":
-            assert zipfile.is_zipfile(path)
-            items.extend(scan_zip_file(path))
+            # TODO: Scan the ZIP file
+            pass
 
         if ".tar" in map(lambda s: s.lower(), path.suffixes):
-            assert tarfile.is_tarfile(path)
-            items.extend(scan_tar_file(path))
+            # TODO: Scan the TAR file
+            pass
     else:
         raise UnknownEntryKindError("unknown kind of path " + repr(path))
     return items
