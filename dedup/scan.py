@@ -25,11 +25,14 @@ from pathlib import Path
 
 SQL_INIT = """\
 CREATE TABLE IF NOT EXISTS files (
+    id INTEGER PRIMARY KEY,
     kind INTEGER,
     path TEXT,
     size INTEGER,
     timestamp REAL,
-    checksum TEXT
+    checksum TEXT,
+    parent_id INTEGER,
+    FOREIGN KEY (parent_id) REFERENCES files(id)
 );
 """
 
@@ -102,12 +105,28 @@ def scan_path(path: Path) -> Entry:
         raise UnknownEntryKindError("unknown kind of path " + repr(path))
 
 
-def flatten_entries(entry: Entry) -> list[Entry]:
-    entries = []
-    entries.append(entry)
+def insert_entries_recursively(
+    entry: Entry,
+    conn: sqlite3.Connection,
+    parent_id: int,
+) -> None:
+    entry_path = bytes(entry.path).decode("utf-8", errors="replace")
+    entry_id = conn.execute(
+        "INSERT INTO files (kind, path, size, timestamp, checksum, parent_id)"
+        + " VALUES (?, ?, ?, ?, ?, ?)"
+        + " RETURNING id",
+        (
+            entry.kind.value,
+            entry_path,
+            entry.size,
+            entry.timestamp.timestamp(),
+            entry.checksum,
+            parent_id,
+        ),
+    ).fetchone()[0]
+
     for child in entry.children:
-        entries.extend(flatten_entries(child))
-    return entries
+        insert_entries_recursively(child, conn, entry_id)
 
 
 def main() -> None:
@@ -135,24 +154,9 @@ def main() -> None:
         print(target_path)
 
         root_entry = scan_path(target_path)
-        entries = flatten_entries(root_entry)
 
-        mapped_entries = map(
-            lambda e: (
-                e.kind.value,
-                str(e.path),
-                e.size,
-                e.timestamp.timestamp(),
-                e.checksum,
-            ),
-            entries,
-        )
         with conn:
-            conn.executemany(
-                "INSERT INTO files (kind, path, size, timestamp, checksum) "
-                + "VALUES (?, ?, ?, ?, ?)",
-                mapped_entries,
-            )
+            insert_entries_recursively(root_entry, conn, 0)
 
     conn.close()
 
