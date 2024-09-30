@@ -134,7 +134,9 @@ def main() -> None:
 
     paths_to_entries = dict()
     checksums_to_entries = dict()
-    for row in conn.execute("SELECT * FROM files ORDER BY path"):
+    for row in conn.execute(
+        "SELECT kind, path, size, timestamp, checksum FROM files ORDER BY path"
+    ):
         entry = convert_row_to_entry(row)
         paths_to_entries[entry.path] = entry
         if entry.checksum:
