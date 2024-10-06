@@ -19,6 +19,8 @@ import argparse
 import datetime
 import hashlib
 import sqlite3
+import typing
+import zipfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -42,6 +44,9 @@ class EntryKind(Enum):
     DIRECTORY = 2
     SYMLINK = 3
 
+    ZIP_MEMBER_FILE = 11
+    ZIP_MEMBER_DIRECTORY = 12
+
 
 @dataclass(frozen=True)
 class Entry:
@@ -60,6 +65,50 @@ class UnknownEntryKindError(NotImplementedError):
 def checksum_file(file_path: Path) -> str:
     with open(file_path, "rb") as f:
         return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def scan_zip_fileobj(zip_fileobj: typing.BinaryIO) -> list[Entry]:
+    assert zipfile.is_zipfile(zip_fileobj)
+
+    items = []
+    with zipfile.ZipFile(zip_fileobj) as zf:
+        for info in zf.infolist():
+            timestamp = datetime.datetime(
+                *info.date_time,
+                tzinfo=datetime.timezone.utc,
+            )
+            if info.is_dir():
+                assert info.file_size == 0
+                items.append(
+                    Entry(
+                        EntryKind.ZIP_MEMBER_DIRECTORY,
+                        Path(info.filename),
+                        info.file_size,
+                        timestamp,
+                        None,
+                        [],
+                    )
+                )
+            else:
+                with zf.open(info.filename, "r") as f:
+                    file_checksum = hashlib.file_digest(f, "sha256").hexdigest()  # type: ignore[arg-type]
+
+                nested_archive_members = []
+                if Path(info.filename).suffix.lower() == ".zip":
+                    with zf.open(info.filename, "r") as f:
+                        nested_archive_members.extend(scan_zip_fileobj(f))  # type: ignore[arg-type]
+
+                items.append(
+                    Entry(
+                        EntryKind.ZIP_MEMBER_FILE,
+                        Path(info.filename),
+                        info.file_size,
+                        timestamp,
+                        file_checksum,
+                        nested_archive_members,
+                    )
+                )
+    return items
 
 
 def scan_path(path: Path) -> Entry:
@@ -90,6 +139,12 @@ def scan_path(path: Path) -> Entry:
         )
     elif path.is_file():
         assert not path.is_symlink()
+
+        archive_members = []
+        if path.suffix.lower() == ".zip":
+            with path.open("rb") as f:
+                archive_members.extend(scan_zip_fileobj(f))
+
         return Entry(
             EntryKind.FILE,
             path,
@@ -99,7 +154,7 @@ def scan_path(path: Path) -> Entry:
                 tz=datetime.timezone.utc,
             ),
             checksum_file(path),
-            [],
+            archive_members,
         )
     else:
         raise UnknownEntryKindError("unknown kind of path " + repr(path))

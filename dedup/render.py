@@ -48,7 +48,10 @@ def load_tree(conn: sqlite3.Connection, entry_id: int) -> Entry:
 def render_tree(entry: Entry) -> XHT:
     entry_content = []
 
-    entry_content.append(XHT("p", {}, entry.path.name))
+    if entry.kind in [EntryKind.ZIP_MEMBER_FILE, EntryKind.ZIP_MEMBER_DIRECTORY]:
+        entry_content.append(XHT("p", {}, str(entry.path)))
+    else:
+        entry_content.append(XHT("p", {}, entry.path.name))
 
     if len(entry.children) > 0:
         entry_content.append(XHT("ul", {}, *map(render_tree, entry.children)))
