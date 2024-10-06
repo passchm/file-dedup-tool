@@ -19,6 +19,7 @@ import argparse
 import datetime
 import hashlib
 import sqlite3
+import tarfile
 import typing
 import zipfile
 from dataclasses import dataclass
@@ -46,6 +47,10 @@ class EntryKind(Enum):
 
     ZIP_MEMBER_FILE = 11
     ZIP_MEMBER_DIRECTORY = 12
+
+    TAR_MEMBER_FILE = 21
+    TAR_MEMBER_DIRECTORY = 22
+    TAR_MEMBER_SYMLINK = 23
 
 
 @dataclass(frozen=True)
@@ -97,6 +102,9 @@ def scan_zip_fileobj(zip_fileobj: typing.BinaryIO) -> list[Entry]:
                 if Path(info.filename).suffix.lower() == ".zip":
                     with zf.open(info.filename, "r") as f:
                         nested_archive_members.extend(scan_zip_fileobj(f))  # type: ignore[arg-type]
+                elif ".tar" in map(lambda s: s.lower(), Path(info.filename).suffixes):
+                    with zf.open(info.filename, "r") as f:
+                        nested_archive_members.extend(scan_tar_fileobj(f))  # type: ignore[arg-type]
 
                 items.append(
                     Entry(
@@ -108,6 +116,65 @@ def scan_zip_fileobj(zip_fileobj: typing.BinaryIO) -> list[Entry]:
                         nested_archive_members,
                     )
                 )
+    return items
+
+
+def scan_tar_fileobj(tar_fileobj: typing.BinaryIO) -> list[Entry]:
+    assert tarfile.is_tarfile(tar_fileobj)
+
+    items = []
+    with tarfile.open(fileobj=tar_fileobj, mode="r") as tf:
+        for info in tf:
+            timestamp = datetime.datetime.fromtimestamp(
+                info.mtime,
+                tz=datetime.timezone.utc,
+            )
+            if info.issym():
+                items.append(
+                    Entry(
+                        EntryKind.TAR_MEMBER_SYMLINK,
+                        Path(info.name),
+                        info.size,
+                        timestamp,
+                        None,
+                        [],
+                    )
+                )
+            elif info.isdir():
+                items.append(
+                    Entry(
+                        EntryKind.TAR_MEMBER_DIRECTORY,
+                        Path(info.name),
+                        info.size,
+                        timestamp,
+                        None,
+                        [],
+                    )
+                )
+            elif info.isfile():
+                f = tf.extractfile(info)
+                file_checksum = hashlib.file_digest(f, "sha256").hexdigest()  # type: ignore[arg-type]
+
+                nested_archive_members = []
+                if Path(info.name).suffix.lower() == ".zip":
+                    f = tf.extractfile(info)
+                    nested_archive_members.extend(scan_zip_fileobj(f))  # type: ignore[arg-type]
+                elif ".tar" in map(lambda s: s.lower(), Path(info.name).suffixes):
+                    f = tf.extractfile(info)
+                    nested_archive_members.extend(scan_tar_fileobj(f))  # type: ignore[arg-type]
+
+                items.append(
+                    Entry(
+                        EntryKind.TAR_MEMBER_FILE,
+                        Path(info.name),
+                        info.size,
+                        timestamp,
+                        file_checksum,
+                        nested_archive_members,
+                    )
+                )
+            else:
+                raise UnknownEntryKindError("unknown kind of archive member")
     return items
 
 
@@ -144,6 +211,9 @@ def scan_path(path: Path) -> Entry:
         if path.suffix.lower() == ".zip":
             with path.open("rb") as f:
                 archive_members.extend(scan_zip_fileobj(f))
+        elif ".tar" in map(lambda s: s.lower(), path.suffixes):
+            with path.open("rb") as f:
+                archive_members.extend(scan_tar_fileobj(f))
 
         return Entry(
             EntryKind.FILE,
