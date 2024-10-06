@@ -8,6 +8,11 @@ html
     box-sizing: inherit;
 }
 
+body
+{
+    font-family: monospace;
+}
+
 .duplicates li
 {
     color: darkblue;
