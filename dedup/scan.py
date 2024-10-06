@@ -116,7 +116,7 @@ def scan_zip_fileobj(zip_fileobj: typing.BinaryIO) -> list[Entry]:
                         nested_archive_members,
                     )
                 )
-    return items
+    return list(sorted(items, key=lambda item: item.path))
 
 
 def scan_tar_fileobj(tar_fileobj: typing.BinaryIO) -> list[Entry]:
@@ -175,7 +175,7 @@ def scan_tar_fileobj(tar_fileobj: typing.BinaryIO) -> list[Entry]:
                 )
             else:
                 raise UnknownEntryKindError("unknown kind of archive member")
-    return items
+    return list(sorted(items, key=lambda item: item.path))
 
 
 def scan_path(path: Path) -> Entry:
