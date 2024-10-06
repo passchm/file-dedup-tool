@@ -18,99 +18,42 @@
 import argparse
 import datetime
 import sqlite3
-from collections import defaultdict
 from pathlib import Path
 
 from .scan import Entry, EntryKind
 from .xhtml5builder import XHT
 
 
-def convert_row_to_entry(row: tuple[int, str, int, float, str | None]) -> Entry:
+def load_tree(conn: sqlite3.Connection, entry_id: int) -> Entry:
+    children = []
+    for child_id in conn.execute(
+        "SELECT id FROM files WHERE parent_id = ?", (entry_id,)
+    ):
+        children.append(load_tree(conn, child_id[0]))
+
+    row = conn.execute(
+        "SELECT kind, path, size, timestamp, checksum FROM files WHERE id = ?",
+        (entry_id,),
+    ).fetchone()
     return Entry(
         EntryKind(row[0]),
         Path(row[1]),
         row[2],
         datetime.datetime.fromtimestamp(row[3], tz=datetime.timezone.utc),
         row[4],
-        [],
+        children,
     )
 
 
-PathsTree = dict[str, "PathsTree"]
+def render_tree(entry: Entry) -> XHT:
+    entry_content = []
 
+    entry_content.append(XHT("p", {}, entry.path.name))
 
-def build_paths_tree(paths: frozenset[Path]) -> PathsTree:
-    root: PathsTree = {}
-    for path in paths:
-        current_level = root
-        for part in path.parts:
-            if part not in current_level:
-                current_level[part] = {}
-            current_level = current_level[part]
-    return root
+    if len(entry.children) > 0:
+        entry_content.append(XHT("ul", {}, *map(render_tree, entry.children)))
 
-
-def render_tree(
-    tree: PathsTree,
-    paths_to_entries: dict[Path, Entry],
-    checksums_to_entries: dict[str, list[Entry]],
-    parent_path: Path,
-) -> XHT:
-    list_items = []
-    for key, value in tree.items():
-        current_path = parent_path / key
-        current_item_content = []
-        current_item_class_list = []
-
-        if current_path in paths_to_entries:
-            entry = paths_to_entries[current_path]
-
-            current_item_content.append(XHT("span", {}, str(key)))
-
-            # Duplicates
-            if (
-                entry.size > 0
-                and entry.checksum
-                and len(checksums_to_entries[entry.checksum]) > 1
-            ):
-                dupes_list = []
-                for dupe in checksums_to_entries[entry.checksum]:
-                    if dupe != entry:
-                        assert dupe.size == entry.size
-                        dupe_class_list = []
-                        if dupe.path.name == entry.path.name:
-                            dupe_class_list.append("same-name")
-                        dupes_list.append(
-                            XHT(
-                                "li",
-                                {"class": " ".join(dupe_class_list)},
-                                str(dupe.path),
-                            )
-                        )
-                current_item_class_list.append("has-duplicates")
-                current_item_content.append(
-                    XHT("ul", {"class": "duplicates"}, *dupes_list)
-                )
-        else:
-            current_item_content.append(XHT("span", {}, str(key)))
-
-        if isinstance(value, dict):
-            current_item_content.append(
-                render_tree(value, paths_to_entries, checksums_to_entries, current_path)
-            )
-
-        list_items.append(
-            XHT(
-                "li",
-                (
-                    {"class": " ".join(current_item_class_list)}
-                    if len(current_item_class_list) > 0
-                    else {}
-                ),
-                *current_item_content
-            )
-        )
-    return XHT("ul", {}, *list_items)
+    return XHT("li", {}, *entry_content)
 
 
 def main() -> None:
@@ -122,34 +65,15 @@ def main() -> None:
 
     conn = sqlite3.connect(args.database)
 
-    raw_paths = frozenset(
-        sorted(
-            map(
-                lambda row: Path(row[0]),
-                conn.execute("SELECT DISTINCT path FROM files ORDER BY path"),
-            )
-        )
-    )
-    bare_tree = build_paths_tree(raw_paths)
-
-    paths_to_entries = dict()
-    checksums_to_entries = dict()
-    for row in conn.execute(
-        "SELECT kind, path, size, timestamp, checksum FROM files ORDER BY path"
-    ):
-        entry = convert_row_to_entry(row)
-        paths_to_entries[entry.path] = entry
-        if entry.checksum:
-            if entry.checksum not in checksums_to_entries:
-                checksums_to_entries[entry.checksum] = [entry]
-            else:
-                checksums_to_entries[entry.checksum].append(entry)
+    root_entries = []
+    for root_id in conn.execute("SELECT id FROM files WHERE parent_id = 0"):
+        root_entries.append(load_tree(conn, root_id[0]))
 
     conn.close()
 
     html_tree = XHT.page(
         [XHT("style", {}, (Path(__file__).parent / "style.css").read_text())],
-        [render_tree(bare_tree, paths_to_entries, checksums_to_entries, Path())],
+        [XHT("ul", {}, *map(render_tree, root_entries))],
     )
     html_text = html_tree.xhtml5()
     Path("./index.xhtml").write_text(html_text)
