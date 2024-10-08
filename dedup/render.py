@@ -44,6 +44,7 @@ def fetch_entry_by_id(conn: sqlite3.Connection, entry_id: int) -> Entry:
 
 def render_entry(conn: sqlite3.Connection, entry_id: int) -> XHT:
     entry_content = []
+    entry_class_list = ["entry"]
 
     entry = fetch_entry_by_id(conn, entry_id)
 
@@ -79,6 +80,9 @@ def render_entry(conn: sqlite3.Connection, entry_id: int) -> XHT:
 
         entry_content.append(XHT("ul", {"class": "duplicates"}, *rendered_duplicates))
 
+    if has_duplicates:
+        entry_class_list.append("has-duplicates")
+
     rendered_children = []
 
     children = conn.execute(
@@ -88,16 +92,60 @@ def render_entry(conn: sqlite3.Connection, entry_id: int) -> XHT:
         rendered_children.append(render_entry(conn, child_id))
 
     if len(rendered_children) > 0:
+        entry_class_list.append("has-children")
         entry_content.append(XHT("ul", {"class": "children"}, *rendered_children))
 
     entry_attributes = {}
 
     entry_attributes["id"] = "node-" + str(entry_id)
 
-    if has_duplicates:
-        entry_attributes["class"] = "has-duplicates"
+    assert "class" not in entry_attributes
+    entry_attributes["class"] = " ".join(entry_class_list)
 
     return XHT("li", entry_attributes, *entry_content)
+
+
+CONTROLS_SCRIPT = """\
+document.addEventListener("DOMContentLoaded", () => {
+    document.querySelectorAll(".entry.has-children > p").forEach(entry => {
+        entry.addEventListener("click", (event) => {
+            event.stopPropagation();
+            entry.parentElement.classList.toggle("show-children");
+        });
+    });
+
+    document.querySelectorAll(".entry ul.duplicates > li > a").forEach(dupeLink => {
+        dupeLink.addEventListener("click", () => {
+            const dupeId = (new URL(dupeLink.href)).hash.substring(1);
+            let dupeAncestor = document.getElementById(dupeId).parentElement;
+            while (dupeAncestor && dupeAncestor !== document.body) {
+                if (dupeAncestor.classList.contains("entry")) {
+                    dupeAncestor.classList.add("show-children");
+                }
+                dupeAncestor = dupeAncestor.parentElement;
+            }
+        });
+    });
+
+    const hideAllButton = document.createElement("button");
+    hideAllButton.textContent = "Hide all";
+    hideAllButton.addEventListener("click", () => {
+        document.querySelectorAll(".entry.has-children").forEach(entry => {
+            entry.classList.remove("show-children");
+        });
+    });
+    document.body.prepend(hideAllButton);
+
+    const showAllButton = document.createElement("button");
+    showAllButton.textContent = "Show all";
+    showAllButton.addEventListener("click", () => {
+        document.querySelectorAll(".entry.has-children").forEach(entry => {
+            entry.classList.add("show-children");
+        });
+    });
+    document.body.prepend(showAllButton);
+});
+"""
 
 
 def main() -> None:
@@ -116,7 +164,10 @@ def main() -> None:
     conn.close()
 
     html_tree = XHT.page(
-        [XHT("style", {}, (Path(__file__).parent / "style.css").read_text())],
+        [
+            XHT("style", {}, (Path(__file__).parent / "style.css").read_text()),
+            XHT("script", {"defer": "defer"}, CONTROLS_SCRIPT),
+        ],
         [XHT("ul", {}, *rendered_root_entries)],
     )
     html_text = html_tree.xhtml5()

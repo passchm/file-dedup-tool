@@ -27,3 +27,38 @@ body
 {
     background-color: #EEEEEE;
 }
+
+.entry.has-children > p
+{
+    cursor: pointer;
+}
+
+.entry.has-children:not(.show-children) > .children
+{
+    display: none;
+}
+
+.entry.has-children:not(.show-children) > p:before
+{
+    content: "➡️  ";
+}
+
+.entry.has-children.show-children > p:before
+{
+    content: "↘️  ";
+}
+
+.entry ul.children
+{
+    list-style-type: none;
+}
+
+.entry ul.duplicates
+{
+    list-style-type: "🆔 ";
+}
+
+.entry .children
+{
+    border-left: 1px solid lightgray;
+}
