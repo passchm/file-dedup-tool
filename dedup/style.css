@@ -13,12 +13,12 @@ body
     font-family: monospace;
 }
 
-.duplicates li
+.duplicates
 {
     color: darkblue;
 }
 
-.duplicates li.same-name
+.duplicates .same-name
 {
     color: blue;
 }

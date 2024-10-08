@@ -45,18 +45,58 @@ def load_tree(conn: sqlite3.Connection, entry_id: int) -> Entry:
     )
 
 
-def render_tree(entry: Entry) -> XHT:
+def render_tree(entry: Entry, grouped_entries: dict[str, list[Entry]]) -> XHT:
     entry_content = []
 
-    if entry.kind in [EntryKind.ZIP_MEMBER_FILE, EntryKind.ZIP_MEMBER_DIRECTORY]:
-        entry_content.append(XHT("p", {}, str(entry.path)))
-    else:
+    if entry.kind in [EntryKind.FILE, EntryKind.DIRECTORY, EntryKind.SYMLINK]:
         entry_content.append(XHT("p", {}, entry.path.name))
+    else:
+        entry_content.append(XHT("p", {}, str(entry.path)))
+
+    has_duplicates = False
+    if entry.size > 0 and entry.checksum and len(grouped_entries[entry.checksum]) > 1:
+        has_duplicates = True
+        duplicates = []
+        for dupe in grouped_entries[entry.checksum]:
+            assert dupe.size == entry.size
+            if dupe != entry:
+                if dupe.path.name == entry.path.name:
+                    duplicates.append(XHT("li", {"class": "same-name"}, str(dupe.path)))
+                else:
+                    duplicates.append(XHT("li", {}, str(dupe.path)))
+        entry_content.append(XHT("ul", {"class": "duplicates"}, *duplicates))
 
     if len(entry.children) > 0:
-        entry_content.append(XHT("ul", {}, *map(render_tree, entry.children)))
+        entry_content.append(
+            XHT(
+                "ul",
+                {},
+                *map(lambda e: render_tree(e, grouped_entries), entry.children)
+            )
+        )
 
-    return XHT("li", {}, *entry_content)
+    if has_duplicates:
+        return XHT("li", {"class": "has-duplicates"}, *entry_content)
+    else:
+        return XHT("li", {}, *entry_content)
+
+
+def flatten_entries(entry: Entry) -> list[Entry]:
+    entries = [entry]
+    for child in entry.children:
+        entries.extend(flatten_entries(child))
+    return entries
+
+
+def group_by_checksums(flattened_entries: list[Entry]) -> dict[str, list[Entry]]:
+    checksums_to_entries = dict()
+    for entry in flattened_entries:
+        if entry.checksum:
+            if entry.checksum not in checksums_to_entries:
+                checksums_to_entries[entry.checksum] = [entry]
+            else:
+                checksums_to_entries[entry.checksum].append(entry)
+    return checksums_to_entries
 
 
 def main() -> None:
@@ -74,9 +114,14 @@ def main() -> None:
 
     conn.close()
 
+    flattened_entries = []
+    for root_entry in root_entries:
+        flattened_entries.extend(flatten_entries(root_entry))
+    grouped_entries = group_by_checksums(flattened_entries)
+
     html_tree = XHT.page(
         [XHT("style", {}, (Path(__file__).parent / "style.css").read_text())],
-        [XHT("ul", {}, *map(render_tree, root_entries))],
+        [XHT("ul", {}, *map(lambda e: render_tree(e, grouped_entries), root_entries))],
     )
     html_text = html_tree.xhtml5()
     Path("./index.xhtml").write_text(html_text)
