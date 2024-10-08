@@ -24,15 +24,12 @@ from .scan import Entry, EntryKind
 from .xhtml5builder import XHT
 
 
-def load_tree(conn: sqlite3.Connection, entry_id: int) -> Entry:
-    children = []
-    for child_id in conn.execute(
-        "SELECT id FROM files WHERE parent_id = ?", (entry_id,)
-    ):
-        children.append(load_tree(conn, child_id[0]))
-
+def fetch_entry_by_id(conn: sqlite3.Connection, entry_id: int) -> Entry:
     row = conn.execute(
-        "SELECT kind, path, size, timestamp, checksum FROM files WHERE id = ?",
+        (
+            "SELECT kind, path, size, timestamp, checksum, parent_id"
+            " FROM files WHERE id = ?"
+        ),
         (entry_id,),
     ).fetchone()
     return Entry(
@@ -41,12 +38,14 @@ def load_tree(conn: sqlite3.Connection, entry_id: int) -> Entry:
         row[2],
         datetime.datetime.fromtimestamp(row[3], tz=datetime.timezone.utc),
         row[4],
-        children,
+        row[5],
     )
 
 
-def render_tree(entry: Entry, grouped_entries: dict[str, list[Entry]]) -> XHT:
+def render_entry(conn: sqlite3.Connection, entry_id: int) -> XHT:
     entry_content = []
+
+    entry = fetch_entry_by_id(conn, entry_id)
 
     if entry.kind in [EntryKind.FILE, EntryKind.DIRECTORY, EntryKind.SYMLINK]:
         entry_content.append(XHT("p", {}, entry.path.name))
@@ -54,49 +53,51 @@ def render_tree(entry: Entry, grouped_entries: dict[str, list[Entry]]) -> XHT:
         entry_content.append(XHT("p", {}, str(entry.path)))
 
     has_duplicates = False
-    if entry.size > 0 and entry.checksum and len(grouped_entries[entry.checksum]) > 1:
-        has_duplicates = True
-        duplicates = []
-        for dupe in grouped_entries[entry.checksum]:
-            assert dupe.size == entry.size
-            if dupe != entry:
-                if dupe.path.name == entry.path.name:
-                    duplicates.append(XHT("li", {"class": "same-name"}, str(dupe.path)))
-                else:
-                    duplicates.append(XHT("li", {}, str(dupe.path)))
-        entry_content.append(XHT("ul", {"class": "duplicates"}, *duplicates))
+    if entry.size > 0 and entry.checksum:
+        rendered_duplicates = []
 
-    if len(entry.children) > 0:
-        entry_content.append(
-            XHT(
-                "ul",
-                {},
-                *map(lambda e: render_tree(e, grouped_entries), entry.children)
+        for dupe_row in conn.execute(
+            (
+                "SELECT id FROM files"
+                " WHERE size = ? AND checksum = ? AND id != ?"
+                " ORDER BY path"
+            ),
+            (entry.size, entry.checksum, entry_id),
+        ):
+            dupe_id = int(dupe_row[0])
+            dupe = fetch_entry_by_id(conn, dupe_id)
+            rendered_duplicates.append(
+                XHT(
+                    "li",
+                    {"class": "same-name"} if dupe.path.name == entry.path.name else {},
+                    XHT("a", {"href": "#node-" + str(dupe_id)}, str(dupe.path)),
+                )
             )
-        )
+
+        if len(rendered_duplicates) > 0:
+            has_duplicates = True
+
+        entry_content.append(XHT("ul", {"class": "duplicates"}, *rendered_duplicates))
+
+    rendered_children = []
+
+    children = conn.execute(
+        "SELECT id FROM files WHERE parent_id = ? ORDER BY path", (entry_id,)
+    ).fetchall()
+    for child_id in map(lambda row: int(row[0]), children):
+        rendered_children.append(render_entry(conn, child_id))
+
+    if len(rendered_children) > 0:
+        entry_content.append(XHT("ul", {"class": "children"}, *rendered_children))
+
+    entry_attributes = {}
+
+    entry_attributes["id"] = "node-" + str(entry_id)
 
     if has_duplicates:
-        return XHT("li", {"class": "has-duplicates"}, *entry_content)
-    else:
-        return XHT("li", {}, *entry_content)
+        entry_attributes["class"] = "has-duplicates"
 
-
-def flatten_entries(entry: Entry) -> list[Entry]:
-    entries = [entry]
-    for child in entry.children:
-        entries.extend(flatten_entries(child))
-    return entries
-
-
-def group_by_checksums(flattened_entries: list[Entry]) -> dict[str, list[Entry]]:
-    checksums_to_entries = dict()
-    for entry in flattened_entries:
-        if entry.checksum:
-            if entry.checksum not in checksums_to_entries:
-                checksums_to_entries[entry.checksum] = [entry]
-            else:
-                checksums_to_entries[entry.checksum].append(entry)
-    return checksums_to_entries
+    return XHT("li", entry_attributes, *entry_content)
 
 
 def main() -> None:
@@ -108,20 +109,15 @@ def main() -> None:
 
     conn = sqlite3.connect(args.database)
 
-    root_entries = []
+    rendered_root_entries = []
     for root_id in conn.execute("SELECT id FROM files WHERE parent_id = 0"):
-        root_entries.append(load_tree(conn, root_id[0]))
+        rendered_root_entries.append(render_entry(conn, root_id[0]))
 
     conn.close()
 
-    flattened_entries = []
-    for root_entry in root_entries:
-        flattened_entries.extend(flatten_entries(root_entry))
-    grouped_entries = group_by_checksums(flattened_entries)
-
     html_tree = XHT.page(
         [XHT("style", {}, (Path(__file__).parent / "style.css").read_text())],
-        [XHT("ul", {}, *map(lambda e: render_tree(e, grouped_entries), root_entries))],
+        [XHT("ul", {}, *rendered_root_entries)],
     )
     html_text = html_tree.xhtml5()
     Path("./index.xhtml").write_text(html_text)
