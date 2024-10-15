@@ -8,7 +8,10 @@ Only modules from the Python 3 standard library are used.
 
 ## Installation
 
-TODO: Describe the installation process
+Make sure that [pipenv](https://packages.debian.org/bookworm/pipenv) is installed, then run the following command:
+```sh
+pipenv install -e 'git+https://github.com/passchm/file-dedup-tool.git#egg=file-dedup-tool'
+```
 
 ## Usage
 
@@ -16,7 +19,7 @@ TODO: Describe the installation process
 
 Run the following command to scan some paths:
 ```sh
-python3 -m dedup.scan ~/Documents/ ~/Downloads/archive.zip ~/Pictures/
+pipenv run python -m dedup.scan ~/Documents/ ~/Downloads/archive.zip ~/Pictures/
 ```
 Replace `~/Documents/`, `~/Downloads/archive.zip`, and `~/Pictures/` with your desired directories or files.
 
@@ -24,5 +27,5 @@ Replace `~/Documents/`, `~/Downloads/archive.zip`, and `~/Pictures/` with your d
 
 Run the following command to generate a report file (`./index.xhtml`) with a tree of scanned directories and files:
 ```sh
-python3 -m dedup.render
+pipenv run python -m dedup.render
 ```
