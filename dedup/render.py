@@ -48,17 +48,7 @@ def render_entry(conn: sqlite3.Connection, entry_id: int) -> XHT:
 
     entry = fetch_entry_by_id(conn, entry_id)
 
-    if entry.kind in [
-        EntryKind.FILE,
-        EntryKind.DIRECTORY,
-        EntryKind.SYMLINK,
-        EntryKind.ZIP_MEMBER_FILE,
-        EntryKind.ZIP_MEMBER_DIRECTORY,
-        EntryKind.ZIP_MEMBER_COMPONENT,
-    ]:
-        entry_content.append(XHT("p", {}, entry.path.name))
-    else:
-        entry_content.append(XHT("p", {}, str(entry.path)))
+    entry_content.append(XHT("p", {}, entry.path.name))
 
     has_duplicates = False
     if entry.size > 0 and entry.checksum:

@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from .tar_file_tree import TarTree, build_tar_tree
 from .zip_file_tree import ZipTree, build_zip_tree
 
 SQL_INIT = """\
@@ -54,6 +55,7 @@ class EntryKind(Enum):
     TAR_MEMBER_FILE = 21
     TAR_MEMBER_DIRECTORY = 22
     TAR_MEMBER_SYMLINK = 23
+    TAR_MEMBER_COMPONENT = 24
 
 
 @dataclass(frozen=True)
@@ -180,67 +182,102 @@ def scan_zip_fileobj(
             scan_zip_tree(zf, root_timestamp, child, conn, parent_id)
 
 
+def scan_tar_tree(
+    tar_handle: tarfile.TarFile,
+    root_timestamp: datetime.datetime,
+    tree: TarTree,
+    conn: sqlite3.Connection,
+    parent_id: int,
+) -> None:
+    if not tree.info:
+        entry = Entry(
+            EntryKind.TAR_MEMBER_COMPONENT,
+            tree.path,
+            0,
+            root_timestamp,
+            None,
+            parent_id,
+        )
+        entry_id = insert_entry(entry, conn)
+        for child in tree.children:
+            scan_tar_tree(tar_handle, root_timestamp, child, conn, entry_id)
+        return
+
+    info = tree.info
+    timestamp = datetime.datetime.fromtimestamp(
+        info.mtime,
+        tz=datetime.timezone.utc,
+    )
+    if info.issym():
+        entry = Entry(
+            EntryKind.TAR_MEMBER_SYMLINK,
+            Path(info.name),
+            info.size,
+            timestamp,
+            None,
+            parent_id,
+        )
+        insert_entry(entry, conn)
+    elif info.isdir():
+        entry = Entry(
+            EntryKind.TAR_MEMBER_DIRECTORY,
+            Path(info.name),
+            info.size,
+            timestamp,
+            None,
+            parent_id,
+        )
+        entry_id = insert_entry(entry, conn)
+        for child in tree.children:
+            scan_tar_tree(tar_handle, root_timestamp, child, conn, entry_id)
+    elif info.isfile():
+        f = tar_handle.extractfile(info)
+        file_checksum = hashlib.file_digest(f, "sha256").hexdigest()  # type: ignore[arg-type]
+
+        entry = Entry(
+            EntryKind.TAR_MEMBER_FILE,
+            Path(info.name),
+            info.size,
+            timestamp,
+            file_checksum,
+            parent_id,
+        )
+        entry_id = insert_entry(entry, conn)
+
+        if Path(info.name).suffix.lower() == ".zip":
+            f = tar_handle.extractfile(info)
+            scan_zip_fileobj(
+                f,  # type: ignore[arg-type]
+                conn,
+                entry_id,
+            )
+        elif ".tar" in map(lambda s: s.lower(), Path(info.name).suffixes):
+            f = tar_handle.extractfile(info)
+            scan_tar_fileobj(
+                f,  # type: ignore[arg-type]
+                conn,
+                entry_id,
+            )
+    else:
+        raise UnknownEntryKindError("unknown kind of archive member")
+
+
 def scan_tar_fileobj(
     tar_fileobj: typing.BinaryIO, conn: sqlite3.Connection, parent_id: int
 ) -> None:
     assert tarfile.is_tarfile(tar_fileobj)
 
+    root_timestamp = datetime.datetime.fromtimestamp(
+        conn.execute(
+            "SELECT timestamp FROM files WHERE id = ?", (parent_id,)
+        ).fetchone()[0],
+        tz=datetime.timezone.utc,
+    )
+
     with tarfile.open(fileobj=tar_fileobj, mode="r") as tf:
-        for info in tf:
-            timestamp = datetime.datetime.fromtimestamp(
-                info.mtime,
-                tz=datetime.timezone.utc,
-            )
-            if info.issym():
-                entry = Entry(
-                    EntryKind.TAR_MEMBER_SYMLINK,
-                    Path(info.name),
-                    info.size,
-                    timestamp,
-                    None,
-                    parent_id,
-                )
-                insert_entry(entry, conn)
-            elif info.isdir():
-                entry = Entry(
-                    EntryKind.TAR_MEMBER_DIRECTORY,
-                    Path(info.name),
-                    info.size,
-                    timestamp,
-                    None,
-                    parent_id,
-                )
-                insert_entry(entry, conn)
-            elif info.isfile():
-                f = tf.extractfile(info)
-                file_checksum = hashlib.file_digest(f, "sha256").hexdigest()  # type: ignore[arg-type]
-
-                entry = Entry(
-                    EntryKind.TAR_MEMBER_FILE,
-                    Path(info.name),
-                    info.size,
-                    timestamp,
-                    file_checksum,
-                    parent_id,
-                )
-                entry_id = insert_entry(entry, conn)
-
-                if Path(info.name).suffix.lower() == ".zip":
-                    f = tf.extractfile(info)
-                    scan_zip_fileobj(
-                        f,  # type: ignore[arg-type]
-                        conn,
-                        entry_id,
-                    )
-                elif ".tar" in map(lambda s: s.lower(), Path(info.name).suffixes):
-                    f = tf.extractfile(info)
-                    scan_tar_fileobj(
-                        f,  # type: ignore[arg-type]
-                        conn,
-                        entry_id,
-                    )
-            else:
-                raise UnknownEntryKindError("unknown kind of archive member")
+        root_node = build_tar_tree(tf.getmembers())
+        for child in root_node.children:
+            scan_tar_tree(tf, root_timestamp, child, conn, parent_id)
 
 
 def scan_path(path: Path, conn: sqlite3.Connection, parent_id: int) -> None:
