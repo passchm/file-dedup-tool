@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from .zip_file_tree import ZipTree, build_zip_tree
+
 SQL_INIT = """\
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY,
@@ -47,6 +49,7 @@ class EntryKind(Enum):
 
     ZIP_MEMBER_FILE = 11
     ZIP_MEMBER_DIRECTORY = 12
+    ZIP_MEMBER_COMPONENT = 14
 
     TAR_MEMBER_FILE = 21
     TAR_MEMBER_DIRECTORY = 22
@@ -90,56 +93,91 @@ def checksum_file(file_path: Path) -> str:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
+def scan_zip_tree(
+    zip_handle: zipfile.ZipFile,
+    root_timestamp: datetime.datetime,
+    tree: ZipTree,
+    conn: sqlite3.Connection,
+    parent_id: int,
+) -> None:
+    if not tree.info:
+        entry = Entry(
+            EntryKind.ZIP_MEMBER_COMPONENT,
+            tree.path,
+            0,
+            root_timestamp,
+            None,
+            parent_id,
+        )
+        entry_id = insert_entry(entry, conn)
+        for child in tree.children:
+            scan_zip_tree(zip_handle, root_timestamp, child, conn, entry_id)
+        return
+
+    info = tree.info
+    timestamp = datetime.datetime(
+        *info.date_time,
+        tzinfo=datetime.timezone.utc,
+    )
+    if info.is_dir():
+        assert info.file_size == 0
+        entry = Entry(
+            EntryKind.ZIP_MEMBER_DIRECTORY,
+            Path(info.filename),
+            info.file_size,
+            timestamp,
+            None,
+            parent_id,
+        )
+        entry_id = insert_entry(entry, conn)
+        for child in tree.children:
+            scan_zip_tree(zip_handle, root_timestamp, child, conn, entry_id)
+    else:
+        with zip_handle.open(info.filename, "r") as f:
+            file_checksum = hashlib.file_digest(f, "sha256").hexdigest()  # type: ignore[arg-type]
+
+        entry = Entry(
+            EntryKind.ZIP_MEMBER_FILE,
+            Path(info.filename),
+            info.file_size,
+            timestamp,
+            file_checksum,
+            parent_id,
+        )
+        entry_id = insert_entry(entry, conn)
+
+        if Path(info.filename).suffix.lower() == ".zip":
+            with zip_handle.open(info.filename, "r") as f:
+                scan_zip_fileobj(
+                    f,  # type: ignore[arg-type]
+                    conn,
+                    entry_id,
+                )
+        elif ".tar" in map(lambda s: s.lower(), Path(info.filename).suffixes):
+            with zip_handle.open(info.filename, "r") as f:
+                scan_tar_fileobj(
+                    f,  # type: ignore[arg-type]
+                    conn,
+                    entry_id,
+                )
+
+
 def scan_zip_fileobj(
     zip_fileobj: typing.BinaryIO, conn: sqlite3.Connection, parent_id: int
 ) -> None:
     assert zipfile.is_zipfile(zip_fileobj)
 
+    root_timestamp = datetime.datetime.fromtimestamp(
+        conn.execute(
+            "SELECT timestamp FROM files WHERE id = ?", (parent_id,)
+        ).fetchone()[0],
+        tz=datetime.timezone.utc,
+    )
+
     with zipfile.ZipFile(zip_fileobj) as zf:
-        for info in zf.infolist():
-            timestamp = datetime.datetime(
-                *info.date_time,
-                tzinfo=datetime.timezone.utc,
-            )
-            if info.is_dir():
-                assert info.file_size == 0
-                entry = Entry(
-                    EntryKind.ZIP_MEMBER_DIRECTORY,
-                    Path(info.filename),
-                    info.file_size,
-                    timestamp,
-                    None,
-                    parent_id,
-                )
-                insert_entry(entry, conn)
-            else:
-                with zf.open(info.filename, "r") as f:
-                    file_checksum = hashlib.file_digest(f, "sha256").hexdigest()  # type: ignore[arg-type]
-
-                entry = Entry(
-                    EntryKind.ZIP_MEMBER_FILE,
-                    Path(info.filename),
-                    info.file_size,
-                    timestamp,
-                    file_checksum,
-                    parent_id,
-                )
-                entry_id = insert_entry(entry, conn)
-
-                if Path(info.filename).suffix.lower() == ".zip":
-                    with zf.open(info.filename, "r") as f:
-                        scan_zip_fileobj(
-                            f,  # type: ignore[arg-type]
-                            conn,
-                            entry_id,
-                        )
-                elif ".tar" in map(lambda s: s.lower(), Path(info.filename).suffixes):
-                    with zf.open(info.filename, "r") as f:
-                        scan_tar_fileobj(
-                            f,  # type: ignore[arg-type]
-                            conn,
-                            entry_id,
-                        )
+        root_node = build_zip_tree(list(zf.infolist()))
+        for child in root_node.children:
+            scan_zip_tree(zf, root_timestamp, child, conn, parent_id)
 
 
 def scan_tar_fileobj(
