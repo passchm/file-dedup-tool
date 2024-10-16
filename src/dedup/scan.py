@@ -135,8 +135,24 @@ def scan_zip_tree(
         for child in tree.children:
             scan_zip_tree(zip_handle, root_timestamp, child, conn, entry_id)
     else:
-        with zip_handle.open(info.filename, "r") as f:
-            file_checksum = hashlib.file_digest(f, "sha256").hexdigest()  # type: ignore[arg-type]
+        file_checksum = None
+
+        is_encrypted = info.flag_bits & 0x1
+        if is_encrypted:
+            print(
+                "ZIP warning:",
+                parent_id,
+                "contains an encrypted file called",
+                info.filename,
+            )
+        else:
+            try:
+                with zip_handle.open(info.filename, "r") as f:
+                    file_checksum = hashlib.file_digest(f, "sha256").hexdigest()  # type: ignore[arg-type]
+            except zipfile.BadZipFile as ex:
+                print("ZIP warning:", parent_id, ex)
+            except NotImplementedError as ex:
+                print("ZIP warning:", parent_id, ex)
 
         entry = Entry(
             EntryKind.ZIP_MEMBER_FILE,
@@ -167,7 +183,9 @@ def scan_zip_tree(
 def scan_zip_fileobj(
     zip_fileobj: typing.BinaryIO, conn: sqlite3.Connection, parent_id: int
 ) -> None:
-    assert zipfile.is_zipfile(zip_fileobj)
+    if not zipfile.is_zipfile(zip_fileobj):
+        print("ZIP warning:", parent_id, "not a ZIP archive")
+        return
 
     root_timestamp = datetime.datetime.fromtimestamp(
         conn.execute(
@@ -176,10 +194,13 @@ def scan_zip_fileobj(
         tz=datetime.timezone.utc,
     )
 
-    with zipfile.ZipFile(zip_fileobj) as zf:
-        root_node = build_zip_tree(list(zf.infolist()))
-        for child in root_node.children:
-            scan_zip_tree(zf, root_timestamp, child, conn, parent_id)
+    try:
+        with zipfile.ZipFile(zip_fileobj) as zf:
+            root_node = build_zip_tree(list(zf.infolist()))
+            for child in root_node.children:
+                scan_zip_tree(zf, root_timestamp, child, conn, parent_id)
+    except UnicodeDecodeError as ex:
+        print("ZIP warning:", parent_id, ex)
 
 
 def scan_tar_tree(
