@@ -40,12 +40,12 @@ body
 
 .entry.has-children:not(.show-children) > p:before
 {
-    content: "➡️  ";
+    content: "\27A1\FE0F  ";
 }
 
 .entry.has-children.show-children > p:before
 {
-    content: "↘️  ";
+    content: "\2198\FE0F  ";
 }
 
 .entry ul.children
@@ -55,7 +55,7 @@ body
 
 .entry ul.duplicates
 {
-    list-style-type: "🆔 ";
+    list-style-type: "\1F194  ";
 }
 
 .entry .children
